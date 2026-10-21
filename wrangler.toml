@@ -1,0 +1,7 @@
+name = "seats-aero-connector"
+main = "src/index.js"
+compatibility_date = "2025-01-01"
+
+# Secrets (set in Cloudflare, never in this file):
+#   SEATS_API_KEY   - your seats.aero Pro API key
+#   CONNECTOR_TOKEN - a long random string; it becomes part of the URL path
