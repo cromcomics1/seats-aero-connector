@@ -3,10 +3,18 @@
 A small Cloudflare Worker that exposes seats.aero award search to Claude as a custom connector (MCP).
 
 ## Tools
-- `search_award_availability` – cached availability, filter by program, cabin, min seats, operating carrier
+- `search_award_availability` – cached availability, filter by program, cabin, min seats and the airlines you choose
 - `bulk_availability` – broad scan for one program
 - `get_trip_details` – exact flights/flight numbers for one availability ID
-- `find_carrier_only_awards` – strict "every flight is AF" check, one leg at a time
+- `find_awards_by_carrier` – strict airline check against real flight numbers, one leg at a time
+
+## Choosing airlines
+Use IATA codes, comma-separated:
+- `carriers: "AF"` – Air France only
+- `carriers: "AF,KL"` with `carrier_match: "only"` (default) – every flight must be AF or KL
+- `carriers: "JL,NH"` with `carrier_match: "any"` – at least one flight on JAL or ANA
+- `exclude_carriers: "KL"` – rule out an airline
+- Omit `carriers` for no airline filter
 
 ## Deploy
 1. Get your seats.aero Pro API key at https://seats.aero/apikey (never commit it).

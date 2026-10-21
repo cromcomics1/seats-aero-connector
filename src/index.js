@@ -9,7 +9,7 @@ const TOOLS = [
   {
     name: "search_award_availability",
     description:
-      "Cached award availability for one origin/destination (airport codes or comma-separated list) over a date range. Optionally filter by program, cabin, minimum seats, and operating carrier (e.g. AF).",
+      "Cached award availability for one origin/destination (airport codes or comma-separated list) over a date range. Optionally filter by program, cabin, minimum seats, and the airlines you choose.",
     inputSchema: {
       type: "object",
       properties: {
@@ -20,7 +20,9 @@ const TOOLS = [
         cabin: { type: "string", enum: ["economy", "premium", "business", "first"] },
         source: { type: "string", description: "Program, e.g. flyingblue, aeroplan, united" },
         min_seats: { type: "integer", description: "Only return days with at least this many seats" },
-        carrier: { type: "string", description: "Keep only results whose cabin airlines include this code, e.g. AF" },
+        carriers: { type: "string", description: "Airlines you want, comma-separated IATA codes, e.g. AF or AF,DL,KL,JL,NH" },
+        carrier_match: { type: "string", enum: ["only", "any"], description: "only (default): every airline on the itinerary must be in your list. any: at least one must be." },
+        exclude_carriers: { type: "string", description: "Airlines to rule out, comma-separated, e.g. KL" },
         direct_only: { type: "boolean" },
       },
       required: ["origin_airport", "destination_airport", "start_date", "end_date"],
@@ -52,9 +54,9 @@ const TOOLS = [
     },
   },
   {
-    name: "find_carrier_only_awards",
+    name: "find_awards_by_carrier",
     description:
-      "Strict check for awards where EVERY flight number is on one carrier (default AF). Searches Flying Blue for each origin x destination leg, keeps days with enough seats, then verifies flight numbers via trip details. Use one leg at a time (e.g. NA gateways -> CDG, then CDG -> NRT,HND,KIX).",
+      "Strict airline-filtered award search. You choose the airlines. Searches each origin x destination leg, keeps days with enough seats, then verifies the real flight numbers via trip details (cached airline fields can be wrong). Use one leg at a time, e.g. NA gateways -> CDG, then CDG -> NRT,HND,KIX. carrier_match 'only' = every flight on your list; 'any' = at least one flight on your list.",
     inputSchema: {
       type: "object",
       properties: {
@@ -62,10 +64,12 @@ const TOOLS = [
         destinations: { type: "string", description: "Comma-separated airports" },
         start_date: { type: "string" },
         end_date: { type: "string" },
+        carriers: { type: "string", description: "Airlines you want, e.g. AF or AF,JL,NH. Omit for no airline filter." },
+        carrier_match: { type: "string", enum: ["only", "any"], default: "only" },
+        exclude_carriers: { type: "string", description: "Airlines to rule out, e.g. KL" },
         cabin: { type: "string", enum: ["economy", "premium", "business", "first"], default: "business" },
-        min_seats: { type: "integer", default: 3 },
-        carrier: { type: "string", default: "AF" },
-        source: { type: "string", default: "flyingblue" },
+        min_seats: { type: "integer", default: 1 },
+        source: { type: "string", description: "Program to search, e.g. flyingblue, aeroplan, united, virginatlantic", default: "flyingblue" },
         max_verifications: { type: "integer", default: 25, description: "Cap on trip lookups to protect the 1,000/day API limit" },
       },
       required: ["origins", "destinations", "start_date", "end_date"],
@@ -126,16 +130,30 @@ async function search(env, a) {
   return out;
 }
 
-const hasCarrier = (airlines, c) => (airlines || "").split(",").map((s) => s.trim()).includes(c);
+const codes = (v) => (v || "").split(",").map((x) => x.trim().toUpperCase()).filter(Boolean);
 
-async function carrierOnly(env, a) {
-  const carrier = (a.carrier || "AF").toUpperCase();
-  const minSeats = a.min_seats ?? 3;
+// airlines: list of IATA codes found on an itinerary
+function airlinesOk(found, f) {
+  if (f.exclude.some((c) => found.includes(c))) return false;
+  if (!f.want.length) return true;
+  if (!found.length) return false;
+  return f.match === "any" ? found.some((c) => f.want.includes(c)) : found.every((c) => f.want.includes(c));
+}
+const mkFilter = (a) => ({ want: codes(a.carriers), exclude: codes(a.exclude_carriers), match: a.carrier_match === "any" ? "any" : "only" });
+
+async function byCarrier(env, a) {
+  const f = mkFilter(a);
+  const minSeats = a.min_seats ?? 1;
   const cap = a.max_verifications ?? 25;
   const cabin = a.cabin || "business";
-  const rows = (await search(env, { ...a, source: a.source || "flyingblue", cabin })).filter(
-    (r) => (r.seats ?? 0) >= minSeats && hasCarrier(r.airlines, carrier)
-  );
+  const rows = (await search(env, { ...a, source: a.source || "flyingblue", cabin })).filter((r) => {
+    if ((r.seats ?? 0) < minSeats) return false;
+    const found = codes(r.airlines);
+    // cached field is only a pre-filter: for "only" it must at least touch the list; exclusions applied strictly
+    if (f.exclude.some((c) => found.includes(c))) return false;
+    if (f.want.length && !found.some((c) => f.want.includes(c))) return false;
+    return true;
+  });
   rows.sort((x, y) => (x.miles ?? 0) - (y.miles ?? 0));
   const verified = [];
   let checked = 0;
@@ -144,10 +162,11 @@ async function carrierOnly(env, a) {
     checked++;
     const t = await sa(env, `/trips/${r.id}`);
     for (const trip of t.data || []) {
-      const flights = (trip.FlightNumbers || "").split(",").map((s) => s.trim()).filter(Boolean);
-      if (flights.length && flights.every((f) => f.toUpperCase().startsWith(carrier)) && (trip.RemainingSeats ?? 0) >= minSeats) {
+      const flights = (trip.FlightNumbers || "").split(",").map((x) => x.trim()).filter(Boolean);
+      const found = [...new Set(flights.map((x) => x.slice(0, 2).toUpperCase()))];
+      if (flights.length && airlinesOk(found, f) && (trip.RemainingSeats ?? 0) >= minSeats) {
         verified.push({
-          date: r.date, route: `${trip.OriginAirport}-${trip.DestinationAirport}`, flights,
+          date: r.date, route: `${trip.OriginAirport}-${trip.DestinationAirport}`, flights, airlines: found,
           departs: trip.DepartsAt, arrives: trip.ArrivesAt, miles: trip.MileageCost,
           taxes: trip.TotalTaxes, seats: trip.RemainingSeats, availability_id: r.id,
         });
@@ -155,7 +174,8 @@ async function carrierOnly(env, a) {
     }
   }
   return {
-    candidates_with_enough_seats: rows.length,
+    filter: { carriers: f.want, match: f.match, exclude: f.exclude, min_seats: minSeats },
+    candidates_after_prefilter: rows.length,
     trip_lookups_used: checked,
     note: rows.length > cap ? `Only the cheapest ${cap} candidates were verified; raise max_verifications or narrow the dates.` : undefined,
     verified,
@@ -167,7 +187,8 @@ async function callTool(env, name, a) {
     const cabin = a.cabin || "business";
     let rows = await search(env, a);
     if (a.min_seats) rows = rows.filter((r) => (r.seats ?? 0) >= a.min_seats);
-    if (a.carrier) rows = rows.filter((r) => hasCarrier(r.airlines, a.carrier.toUpperCase()));
+    const f = mkFilter(a);
+    rows = rows.filter((r) => airlinesOk(codes(r.airlines), f));
     return { cabin, count: rows.length, results: rows };
   }
   if (name === "bulk_availability") {
@@ -177,7 +198,7 @@ async function callTool(env, name, a) {
     });
   }
   if (name === "get_trip_details") return sa(env, `/trips/${encodeURIComponent(a.availability_id)}`);
-  if (name === "find_carrier_only_awards") return carrierOnly(env, a);
+  if (name === "find_awards_by_carrier") return byCarrier(env, a);
   throw new Error(`Unknown tool: ${name}`);
 }
 
