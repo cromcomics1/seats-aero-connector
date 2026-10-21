@@ -26,3 +26,5 @@ Use IATA codes, comma-separated:
 5. In Claude: Settings > Connectors > Add custom connector > paste that URL.
 
 Treat the URL as a password: anyone who has it can use your API quota (1,000 calls/day).
+
+<!-- redeploy trigger -->
