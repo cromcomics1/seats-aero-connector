@@ -45,6 +45,19 @@ const TOOLS = [
     },
   },
   {
+    name: "api_debug",
+    description: "Debug only: call a seats.aero partner API GET path and return the HTTP status plus the first part of the raw body.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "e.g. /search" },
+        params: { type: "string", description: "JSON object of query params" },
+        max_chars: { type: "integer", default: 2500 },
+      },
+      required: ["path"],
+    },
+  },
+  {
     name: "get_trip_details",
     description: "Exact flights, flight numbers, taxes and mileage cost for one availability ID.",
     inputSchema: {
@@ -196,6 +209,13 @@ async function callTool(env, name, a) {
       source: a.source, start_date: a.start_date, end_date: a.end_date,
       cabin: a.cabin, origin_region: a.origin_region, destination_region: a.destination_region, take: 500,
     });
+  }
+  if (name === "api_debug") {
+    const url = new URL(API + a.path);
+    for (const [k, v] of Object.entries(a.params ? JSON.parse(a.params) : {})) url.searchParams.set(k, String(v));
+    const res = await fetch(url, { headers: { "Partner-Authorization": env.SEATS_API_KEY, accept: "application/json" } });
+    const text = await res.text();
+    return { status: res.status, url: url.toString(), length: text.length, body: text.slice(0, a.max_chars || 2500) };
   }
   if (name === "get_trip_details") return sa(env, `/trips/${encodeURIComponent(a.availability_id)}`);
   if (name === "find_awards_by_carrier") return byCarrier(env, a);
