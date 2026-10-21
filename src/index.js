@@ -230,6 +230,16 @@ async function rpc(env, msg) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    if (url.pathname === "/health") {
+      // Reports only whether secrets exist (never their values) to help debug setup.
+      return json({
+        ok: true,
+        has_SEATS_API_KEY: Boolean(env.SEATS_API_KEY),
+        has_CONNECTOR_TOKEN: Boolean(env.CONNECTOR_TOKEN),
+        connector_token_length: env.CONNECTOR_TOKEN ? env.CONNECTOR_TOKEN.length : 0,
+        connector_token_has_whitespace: env.CONNECTOR_TOKEN ? /\s/.test(env.CONNECTOR_TOKEN) : false,
+      });
+    }
     const [, base, token] = url.pathname.split("/");
     if (base !== "mcp" || !env.CONNECTOR_TOKEN || token !== env.CONNECTOR_TOKEN) {
       return new Response("Not found", { status: 404 });
